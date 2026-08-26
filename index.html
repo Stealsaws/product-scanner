@@ -172,12 +172,36 @@
         });
     }
 
+    const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+
     function startScanner() {
+        // บน iOS Safari การขอ permission ผ่านไลบรารีโดยตรงมักช้า/ดูเหมือนค้าง
+        // เลยขอ permission กล้องเองก่อน พร้อมโชว์สถานะชัดเจนให้ผู้ใช้รู้ว่ากำลังรออะไรอยู่
+        if (isIOS && navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
+            document.getElementById('status').innerText = "กำลังขอสิทธิ์ใช้กล้อง กรุณากด \"Allow\" ที่เบราว์เซอร์...";
+            navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } })
+                .then(function (stream) {
+                    // ปิด stream ทดสอบทันที ไลบรารีจะเปิดใหม่เองตอน render
+                    stream.getTracks().forEach(track => track.stop());
+                    document.getElementById('status').innerText = "กำลังเปิดกล้อง...";
+                    renderScannerWidget();
+                })
+                .catch(function (err) {
+                    console.error('ขอสิทธิ์กล้องไม่สำเร็จ:', err);
+                    document.getElementById('status').innerText =
+                        "ไม่ได้รับอนุญาตให้ใช้กล้อง กรุณาไปที่ ตั้งค่า > Safari > กล้อง แล้วอนุญาตเว็บนี้ จากนั้นโหลดหน้านี้ใหม่";
+                });
+        } else {
+            renderScannerWidget();
+        }
+    }
+
+    function renderScannerWidget() {
         try {
             const html5QrcodeScanner = new Html5QrcodeScanner(
                 "reader",
                 {
-                    fps: 15,
+                    fps: isIOS ? 10 : 15,
                     qrbox: function (viewfinderWidth, viewfinderHeight) {
                         const w = Math.floor(viewfinderWidth * 0.85);
                         const h = Math.floor(Math.min(viewfinderHeight * 0.5, w * 0.5));
@@ -195,7 +219,8 @@
                         Html5QrcodeSupportedFormats.ITF
                     ],
                     experimentalFeatures: {
-                        useBarCodeDetectorIfSupported: true
+                        // Safari iOS ไม่รองรับ BarcodeDetector native อยู่แล้ว ปิดไว้กันไลบรารีเสียเวลาเช็ค/fallback
+                        useBarCodeDetectorIfSupported: !isIOS
                     },
                     rememberLastUsedCamera: true,
                     showTorchButtonIfSupported: true,
@@ -205,6 +230,9 @@
                 /* verbose= */ false
             );
             html5QrcodeScanner.render(onScanSuccess, onScanFailure);
+            if (isIOS) {
+                document.getElementById('status').innerText = "พร้อมสแกนแล้ว! (สินค้าทั้งหมด " + Object.keys(productDatabase).length + " รายการ)";
+            }
         } catch (e) {
             console.error('เปิดกล้องด้วยค่าตั้งต้นไม่สำเร็จ ลองใช้ค่าพื้นฐานแทน:', e);
             // เบราว์เซอร์บางตัว (เช่น Safari รุ่นเก่า) อาจไม่รองรับ option ขั้นสูงบางตัว — fallback เป็นค่าพื้นฐาน
