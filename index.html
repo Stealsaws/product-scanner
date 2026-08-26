@@ -61,11 +61,29 @@
         .manual-row { display: flex; gap: 8px; }
         .manual-row input { flex: 1; padding: 10px; border: 1px solid #ccc; border-radius: 6px; font-size: 16px; }
         .manual-row button { padding: 10px 16px; border: none; border-radius: 6px; background: #2c3e50; color: white; cursor: pointer; }
+        .admin-gear {
+            position: absolute;
+            top: 10px;
+            right: 10px;
+            background: none;
+            border: none;
+            font-size: 20px;
+            opacity: 0.35;
+            cursor: pointer;
+            padding: 6px;
+        }
+        .admin-gear:hover { opacity: 0.8; }
+        .settings-list { max-height: 320px; overflow-y: auto; margin: 12px 0; border: 1px solid #eee; border-radius: 8px; padding: 8px; }
+        .settings-list label { display: flex; align-items: center; gap: 8px; padding: 6px 4px; font-size: 15px; border-bottom: 1px solid #f2f2f2; }
+        .settings-list label:last-child { border-bottom: none; }
+        .admin-pass-input { width: 100%; padding: 10px; border: 1px solid #ccc; border-radius: 6px; font-size: 16px; box-sizing: border-box; margin-bottom: 10px; }
+        .admin-note { font-size: 12px; color: #888; margin-top: 8px; }
     </style>
 </head>
 <body>
 
-<div class="container">
+<div class="container" style="position: relative;">
+    <button class="admin-gear" id="adminGearBtn" onclick="openAdminGate()" title="ตั้งค่าแอดมิน">⚙️</button>
     <h2>สแกนบาร์โค้ดสินค้า</h2>
     <div id="readerWrap" style="position: relative;">
         <div id="reader"></div>
@@ -92,9 +110,40 @@
     </div>
 </div>
 
+<div class="modal-backdrop" id="adminGateBackdrop" onclick="if(event.target===this) closeAdminGate()">
+    <div class="modal-box">
+        <h3>เข้าสู่โหมดแอดมิน</h3>
+        <input type="password" id="adminPassInput" class="admin-pass-input" placeholder="รหัสผ่านแอดมิน">
+        <div id="adminGateError" style="color:#e74c3c; font-size:13px; margin-bottom:8px;"></div>
+        <button class="modal-close-btn" onclick="checkAdminPassword()">เข้าสู่ระบบ</button>
+        <button class="modal-close-btn" style="background:#95a5a6; margin-top:8px;" onclick="closeAdminGate()">ยกเลิก</button>
+    </div>
+</div>
+
+<div class="modal-backdrop" id="adminSettingsBackdrop" onclick="if(event.target===this) closeAdminSettings()">
+    <div class="modal-box">
+        <h3>เลือกข้อมูลที่จะแสดงในการ์ด</h3>
+        <div id="settingsList" class="settings-list">กำลังโหลดรายชื่อคอลัมน์...</div>
+        <div id="adminSaveMsg" style="font-size:13px; color:#27ae60;"></div>
+        <button class="modal-close-btn" onclick="saveAdminSettings()">บันทึก</button>
+        <button class="modal-close-btn" style="background:#95a5a6; margin-top:8px;" onclick="closeAdminSettings()">ปิด</button>
+        <div class="admin-note">การตั้งค่านี้จะมีผลกับผู้ใช้ทุกคนที่เข้าเว็บนี้ • คอลัมน์ใหม่ที่เพิ่มเข้าชีตทีหลัง จะถูกติ๊กแสดงให้อัตโนมัติ (ต้องเข้ามาติ๊กออกเองถ้าไม่ต้องการ)</div>
+    </div>
+</div>
+
 <script>
     // ลิงก์ CSV จาก Google Sheets (Publish to web -> CSV)
     const GOOGLE_SHEET_CSV_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vT7gT3uKflnmDli00gcHzD8UfT4rtHZkOto51PpFiIa5dDZ9qZwekjvMy-Xe2UDrzQ1UB0viphhMraT/pub?output=csv";
+
+    // ตั้งรหัสผ่านแอดมินตรงนี้ (แก้เป็นรหัสของคุณเอง)
+    const ADMIN_PASSWORD = "riki2026";
+
+    // ลิงก์ Web App ของ Google Apps Script สำหรับอ่าน/บันทึกการตั้งค่าคอลัมน์ที่จะแสดง (ตั้งค่ากลาง ใช้ร่วมกันทุกคน)
+    // ทำตามขั้นตอนที่แนบให้แยกต่างหาก แล้วนำลิงก์ที่ได้มาใส่แทนตรงนี้
+    const SETTINGS_SCRIPT_URL = "ใส่ลิงก์_Apps_Script_Web_App_ตรงนี้";
+
+    let allColumns = [];        // ทุกคอลัมน์ที่พบในชีต (ไม่รวมรหัสสินค้า)
+    let hiddenColumns = [];     // คอลัมน์ที่แอดมิน "ปิด" ไม่ให้แสดง — คอลัมน์ใหม่ที่ยังไม่เคยตั้งค่าจะไม่อยู่ในนี้ จึงแสดงอัตโนมัติ
 
     let productDatabase = {};
     let scannerStarted = false;
@@ -139,27 +188,37 @@
                 console.log('ตัวอย่างแถวแรก:', data[0]);
 
                 productDatabase = {};
+                allColumns = [];
                 data.forEach(row => {
                     const keys = Object.keys(row);
                     const findKey = (target) => keys.find(k => k.trim().toLowerCase() === target.toLowerCase());
 
                     const barcodeKey = findKey('รหัสสินค้า');
-                    const nameKey = findKey('ชื่อสินค้า');
-                    const feedbackKey = findKey('Mer. Feedback');
 
                     let rawBarcode = barcodeKey ? String(row[barcodeKey]).trim() : null;
                     if (rawBarcode) {
-                        const entry = {
-                            name: nameKey ? row[nameKey] : '-',
-                            feedback: feedbackKey ? row[feedbackKey] : '-'
-                        };
+                        // เก็บทุกคอลัมน์ไว้ (ยกเว้นคอลัมน์รหัสสินค้าเอง) เผื่อแอดมินเลือกให้แสดงเพิ่ม
+                        const entry = {};
+                        keys.forEach(k => {
+                            if (k !== barcodeKey && k.trim() !== '') {
+                                const cleanKey = k.trim();
+                                entry[cleanKey] = row[k];
+                                if (allColumns.indexOf(cleanKey) === -1) allColumns.push(cleanKey);
+                            }
+                        });
+                        // คงชื่อ field เดิมไว้ให้โค้ดส่วนอื่นที่อ้างอิง .name / .feedback ยังทำงานได้
+                        entry.name = entry['ชื่อสินค้า'] || '-';
+                        entry.feedback = entry['Mer. Feedback'] || '-';
+
                         productDatabase[rawBarcode] = entry;
                         productDatabase[rawBarcode.replace(/^0+/, '')] = entry;
                         productDatabase['0' + rawBarcode] = entry;
                     }
                 });
                 console.log('จำนวนบาร์โค้ดในฐานข้อมูล:', Object.keys(productDatabase).length);
+                console.log('คอลัมน์ทั้งหมดที่พบ:', allColumns);
                 document.getElementById('status').innerText = "พร้อมสแกนแล้ว! (สินค้าทั้งหมด " + data.length + " รายการ)";
+                loadVisibleColumnSettings();
                 if (!scannerStarted) {
                     startScanner();
                     scannerStarted = true;
@@ -253,14 +312,31 @@
     function showSuccessModal(code, product) {
         const box = document.getElementById('modalBox');
         box.classList.remove('modal-error');
+
+        // คอลัมน์ที่จะโชว์ = ทุกคอลัมน์ที่พบในชีต ลบด้วยคอลัมน์ที่แอดมินสั่งซ่อนไว้
+        // (คอลัมน์ใหม่ที่เพิ่งเพิ่มเข้าชีต ยังไม่เคยถูกสั่งซ่อน จึงโชว์ให้อัตโนมัติ)
+        const columnsToShow = allColumns.length > 0
+            ? allColumns.filter(col => !hiddenColumns.includes(col))
+            : ['ชื่อสินค้า', 'Mer. Feedback']; // เผื่อกรณี allColumns ยังไม่พร้อม
+
+        let rowsHtml = '<div class="data-row"><strong>Barcode</strong><span>' + escapeHtml(code) + '</span></div>';
+        columnsToShow.forEach(col => {
+            const val = product[col] !== undefined && product[col] !== '' ? product[col] : '-';
+            rowsHtml += '<div class="data-row"><strong>' + escapeHtml(col) + '</strong><span>' + escapeHtml(String(val)) + '</span></div>';
+        });
+
         box.innerHTML = `
             <h3 class="ok">รายละเอียดสินค้า</h3>
-            <div class="data-row"><strong>Barcode</strong><span>${code}</span></div>
-            <div class="data-row"><strong>ชื่อสินค้า</strong><span>${product.name}</span></div>
-            <div class="data-row"><strong>Mer. Feedback</strong><span>${product.feedback}</span></div>
+            ${rowsHtml}
             <button class="modal-close-btn" onclick="hideOverlay()">ปิด / สแกนต่อ</button>
         `;
         document.getElementById('modalBackdrop').classList.add('show');
+    }
+
+    function escapeHtml(str) {
+        const div = document.createElement('div');
+        div.innerText = str;
+        return div.innerHTML;
     }
 
     function showErrorModal(code) {
@@ -315,6 +391,104 @@
             });
         }
     });
+
+    // ---------- ระบบแอดมิน: เข้ารหัสผ่าน + เลือกคอลัมน์ที่จะแสดง ----------
+
+    function openAdminGate() {
+        document.getElementById('adminPassInput').value = '';
+        document.getElementById('adminGateError').innerText = '';
+        document.getElementById('adminGateBackdrop').classList.add('show');
+    }
+
+    function closeAdminGate() {
+        document.getElementById('adminGateBackdrop').classList.remove('show');
+    }
+
+    function checkAdminPassword() {
+        const val = document.getElementById('adminPassInput').value;
+        if (val === ADMIN_PASSWORD) {
+            closeAdminGate();
+            openAdminSettings();
+        } else {
+            document.getElementById('adminGateError').innerText = 'รหัสผ่านไม่ถูกต้อง';
+        }
+    }
+
+    function openAdminSettings() {
+        const listEl = document.getElementById('settingsList');
+        document.getElementById('adminSaveMsg').innerText = '';
+        if (allColumns.length === 0) {
+            listEl.innerHTML = 'ยังไม่มีข้อมูลคอลัมน์ (รอโหลดข้อมูลสินค้าให้เสร็จก่อน)';
+        } else {
+            listEl.innerHTML = allColumns.map(col => {
+                const checked = hiddenColumns.includes(col) ? '' : 'checked';
+                return `<label><input type="checkbox" value="${escapeHtml(col)}" ${checked}> ${escapeHtml(col)}</label>`;
+            }).join('');
+        }
+        document.getElementById('adminSettingsBackdrop').classList.add('show');
+    }
+
+    function closeAdminSettings() {
+        document.getElementById('adminSettingsBackdrop').classList.remove('show');
+    }
+
+    function saveAdminSettings() {
+        const checkboxes = Array.from(document.querySelectorAll('#settingsList input[type=checkbox]'));
+        const unchecked = checkboxes.filter(cb => !cb.checked).map(cb => cb.value);
+        hiddenColumns = unchecked;
+
+        // เก็บสำรองไว้ในเครื่องด้วย เผื่อ Apps Script ยังไม่ได้ตั้งค่า/ออฟไลน์
+        try { localStorage.setItem('hiddenColumns_backup', JSON.stringify(unchecked)); } catch (e) {}
+
+        const msgEl = document.getElementById('adminSaveMsg');
+
+        if (!SETTINGS_SCRIPT_URL || SETTINGS_SCRIPT_URL.indexOf('ใส่ลิงก์') === 0) {
+            msgEl.style.color = '#e74c3c';
+            msgEl.innerText = 'ยังไม่ได้ตั้งค่า Apps Script URL — บันทึกไว้ในเครื่องนี้เท่านั้น (ยังไม่มีผลกับคนอื่น)';
+            return;
+        }
+
+        msgEl.style.color = '#555';
+        msgEl.innerText = 'กำลังบันทึก...';
+
+        fetch(SETTINGS_SCRIPT_URL, {
+            method: 'POST',
+            headers: { 'Content-Type': 'text/plain' },
+            body: JSON.stringify({ hiddenColumns: unchecked })
+        })
+            .then(res => res.json())
+            .then(data => {
+                msgEl.style.color = '#27ae60';
+                msgEl.innerText = 'บันทึกเรียบร้อย มีผลกับทุกคนแล้ว';
+            })
+            .catch(err => {
+                console.error('บันทึกการตั้งค่าไม่สำเร็จ:', err);
+                msgEl.style.color = '#e74c3c';
+                msgEl.innerText = 'บันทึกไปยังส่วนกลางไม่สำเร็จ (บันทึกในเครื่องนี้ไว้แล้ว)';
+            });
+    }
+
+    function loadVisibleColumnSettings() {
+        // โหลดค่าสำรองจากเครื่องนี้ไว้ก่อนเผื่อโหลดจากส่วนกลางไม่ทัน/ไม่สำเร็จ
+        try {
+            const backup = localStorage.getItem('hiddenColumns_backup');
+            if (backup) hiddenColumns = JSON.parse(backup);
+        } catch (e) {}
+
+        if (!SETTINGS_SCRIPT_URL || SETTINGS_SCRIPT_URL.indexOf('ใส่ลิงก์') === 0) return;
+
+        fetch(SETTINGS_SCRIPT_URL, { cache: 'no-store' })
+            .then(res => res.json())
+            .then(data => {
+                if (data && Array.isArray(data.hiddenColumns)) {
+                    hiddenColumns = data.hiddenColumns;
+                    console.log('โหลดการตั้งค่าคอลัมน์ที่ถูกซ่อน:', hiddenColumns);
+                }
+            })
+            .catch(err => {
+                console.warn('โหลดการตั้งค่าส่วนกลางไม่สำเร็จ ใช้ค่าสำรองในเครื่องแทน:', err);
+            });
+    }
 
     loadData();
 </script>
